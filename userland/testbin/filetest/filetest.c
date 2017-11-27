@@ -68,7 +68,6 @@ main(int argc, char *argv[])
 		err(1, "%s: open for write", file);
 	}
 
-
 	rv = write(fd, writebuf, 40);
 	if (rv<0) {
 		err(1, "%s: write", file);
