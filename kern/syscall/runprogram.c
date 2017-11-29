@@ -131,7 +131,7 @@ runprogram(char *progname)
 	if (result) {
 		return result;
 	}
-
+	
 	/* We should be a new process. */
 	KASSERT(proc_getas() == NULL);
 

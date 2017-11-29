@@ -185,7 +185,147 @@ int sys_close(int fd)
 /*
  * close() - remove from the file table.
  */
+int sys_meld(const_userptr_t pn1, const_userptr_t pn2, const_userptr_t pn3, int *retval)
+{
+	struct openfile *openFile1, *openFile2, *openFile3;
 
+	int result = 0;
+	char *kpath_pn1 = (char*)kmalloc(sizeof(char)*PATH_MAX);
+	char *kpath_pn2 = (char*)kmalloc(sizeof(char)*PATH_MAX);
+	char *kpath_pn3 = (char*)kmalloc(sizeof(char)*PATH_MAX);
+	int counter = 0;
+	int fd;
+	int tempVal;
+
+	//copy in supplied pathnames
+	result = copyinstr(pn1, kpath_pn1, PATH_MAX, NULL);
+	if(result != 0)
+		return result;
+	result = copyinstr(pn2, kpath_pn2, PATH_MAX, NULL);
+	if(result != 0)
+		return result;
+	result = copyinstr(pn3, kpath_pn3, PATH_MAX, NULL);
+	if(result != 0)
+		return result;
+
+	//open the first two files for reading
+
+	result = openfile_open(kpath_pn1, O_RDWR, 0664, &openFile1);
+	if(result != 0)
+		return ENOENT;
+	result = openfile_open(kpath_pn2, O_RDWR, 0664, &openFile2);
+	if(result != 0)
+		return ENOENT;
+
+	//open the third file for writing
+	result = openfile_open(kpath_pn3, O_WRONLY | O_CREAT | O_EXCL, 0664, &openFile3);
+	if(result != 0)
+		return EEXIST;
+	
+	//place them in filetable 
+	result = filetable_place(curproc->p_filetable, openFile1, &tempVal);
+	if(result != 0)
+		return result;
+	result = filetable_place(curproc->p_filetable, openFile2, &tempVal);
+	if(result != 0)
+		return result;
+	result = filetable_place(curproc->p_filetable, openFile3, &tempVal);
+	if(result != 0)
+		return result;
+	fd = tempVal;
+	
+	//buffers for 4 bytes of each file
+	char *buffer1 = (char*)kmalloc(sizeof(char)*4);
+	char *buffer2 = (char*)kmalloc(sizeof(char)*4);
+
+	struct stat st;
+	//size of first file
+	result = VOP_STAT(openFile1->of_vnode, &st);
+	int size = st.st_size;
+	//size of second file
+	result = VOP_STAT(openFile2->of_vnode, &st);
+	size = size + st.st_size;
+
+	struct iovec ioVec;
+	struct uio uIO1, uIO2, wUIO;
+
+	while(counter < size/2){
+	//file 1 reading 4 bytes
+		lock_acquire(openFile1->of_offsetlock);
+		
+		uio_kinit(&ioVec, &uIO1, buffer1, 4, openFile1->of_offset, UIO_READ);
+		result = VOP_READ(openFile1->of_vnode, &uIO1);
+		if(result != 0)
+			return result;
+		openFile1->of_offset = uIO1.uio_offset;
+
+		lock_release(openFile1->of_offsetlock);
+		
+
+		//file 2 reading 4 bytes
+		lock_acquire(openFile2->of_offsetlock);
+		uio_kinit(&ioVec, &uIO2, buffer2, 4, openFile2->of_offset, UIO_READ);
+		result = VOP_READ(openFile2->of_vnode, &uIO2);
+		if(result != 0)
+			return result;
+		openFile2->of_offset = uIO2.uio_offset;
+		
+		lock_release(openFile2->of_offsetlock);
+
+		//write 4 bytes from file 1 to the meld file
+		lock_acquire(openFile3->of_offsetlock);
+		uio_kinit(&ioVec, &wUIO, buffer1, 4,openFile3->of_offset, UIO_WRITE);
+		result = VOP_WRITE(openFile3->of_vnode, &wUIO);
+		if(result != 0)
+			return result;
+		openFile3->of_offset = wUIO.uio_offset;
+		
+		lock_release(openFile3->of_offsetlock);
+
+		
+		//write 4 bytes from file 2 to the meld file
+		lock_acquire(openFile3->of_offsetlock);
+		uio_kinit(&ioVec, &wUIO, buffer2, 4, openFile3->of_offset, UIO_WRITE);
+		result = VOP_WRITE(openFile3->of_vnode, &wUIO);
+		if(result != 0)
+			return result;
+
+		openFile3->of_offset = wUIO.uio_offset;
+		lock_release(openFile3->of_offsetlock);
+	
+		//increment counter
+		counter = counter + 4;
+	}
+
+	*retval = openFile3->of_offset;
+	
+	//closing files
+
+	KASSERT(filetable_okfd(curproc->p_filetable, fd));
+
+	filetable_placeat(curproc->p_filetable, NULL, fd, &openFile1);
+	filetable_placeat(curproc->p_filetable, NULL, fd, &openFile2);
+	filetable_placeat(curproc->p_filetable, NULL, fd, &openFile3);
+	
+	if(openFile1 == NULL)
+		return ENOENT;
+	if(openFile2 == NULL)
+		return ENOENT;
+	if(openFile3 == NULL)
+		return ENOENT;
+	
+	openfile_decref(openFile1);
+	openfile_decref(openFile2);
+	openfile_decref(openFile3);
+
+	kfree(kpath_pn1);
+	kfree(kpath_pn2);
+	kfree(kpath_pn3);
+	kfree(buffer1);
+	kfree(buffer2);
+
+	return 0;
+}
 /* 
 * meld () - combine the content of two files word by word into a new file
 */
